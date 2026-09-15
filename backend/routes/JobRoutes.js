@@ -1,118 +1,107 @@
 const express = require('express');
 const Job = require('../models/Job');
-const User = require('../models/User'); // Add this import for User model
+const User = require('../models/User');
+const auth = require('../middleware/auth');
 const router = express.Router();
 
-// POST: Create a new job
-router.post('/', async (req, res) => {
+// Helper to check job ownership
+const checkJobOwnership = (job, user) => {
+  if (!job || !user) return false;
+  if (user.role === 'Admin') return true;
+  return job.userid && job.userid.toString() === user.id.toString();
+};
+
+// POST: Create a new job (Authenticated)
+router.post('/', auth, async (req, res) => {
   const { 
-    userid, 
     title, 
-    categories,  // Changed from category to categories
+    categories,
     area,
     description,
     minBudget,
     maxBudget,
     biddingStartTime, 
     biddingEndTime,
-    milestones  // Add this to accept milestones
+    milestones
   } = req.body;
 
   try {
-    // Fetch the username for the given userid
-    const user = await User.findById(userid);
-    const username = user ? user.username : 'Unknown User';
-
     const newJob = new Job({
-      userid,
-      username,
+      userid: req.user.id,
+      username: req.user.username || 'User',
       title,
-      categories,  // Changed from category to categories
+      categories,
       area,
       description,
       minBudget,
       maxBudget,
-      biddingStartTime,
+      biddingStartTime: biddingStartTime || new Date(),
       biddingEndTime,
-      milestones: milestones || []  // Use provided milestones or empty array
+      milestones: milestones || []
     });
 
     await newJob.save();
     res.status(201).json({ message: 'Job created successfully', job: newJob });
   } catch (err) {
-    console.error('Error creating job:', err);
+    console.error('Error creating job:', err.message);
     res.status(500).json({ error: 'Error creating job' });
   }
 });
 
-// GET: Fetch all jobs with user info
+// GET: Fetch all jobs with user info (Public read)
 router.get('/', async (req, res) => {
   try {
     const { userid } = req.query;
-    
-    // If userid is provided, filter jobs by userid
     const query = userid ? { userid } : {};
-    
-    // Fetch jobs
     const jobs = await Job.find(query);
     
-    // For each job, try to fetch the user info if username is not already stored
     const jobsWithUserInfo = await Promise.all(jobs.map(async (job) => {
       const jobObj = job.toObject();
-      
-      // Only fetch user info if username is not available
       if (!jobObj.username && jobObj.userid) {
         try {
           const user = await User.findById(jobObj.userid);
           jobObj.username = user ? user.username : 'Unknown User';
         } catch (error) {
-          console.log('Error fetching user data:', error);
           jobObj.username = 'Unknown User';
         }
       }
-      
       return jobObj;
     }));
     
     res.status(200).json(jobsWithUserInfo);
   } catch (err) {
-    console.error('Error fetching jobs:', err);
+    console.error('Error fetching jobs:', err.message);
     res.status(500).json({ error: 'Error fetching jobs' });
   }
 });
 
-// GET: Fetch a specific job by ID
+// GET: Fetch a specific job by ID (Public read)
 router.get('/:id', async (req, res) => {
   try {
     const job = await Job.findById(req.params.id);
-    
     if (!job) {
       return res.status(404).json({ error: 'Job not found' });
     }
     
     const jobData = job.toObject();
-    
-    // If username is not stored with job, try to fetch it
     if (!jobData.username && jobData.userid) {
       try {
         const user = await User.findById(jobData.userid);
-        if (user) {
-          jobData.username = user.username;
-        }
+        if (user) jobData.username = user.username;
       } catch (userErr) {
-        console.log('Error fetching user data:', userErr);
+        // ignore error
       }
     }
     
     res.status(200).json(jobData);
   } catch (err) {
-    console.error('Error fetching job details:', err);
+    console.error('Error fetching job details:', err.message);
     res.status(500).json({ error: 'Error fetching job details' });
   }
 });
 
-// Modify the auction-status endpoint to ensure consistent response format
-router.put('/:id/auction-status', async (req, res) => {
+// V04: Put auction status with ownership check
+router.put('/:id/auction-status', auth, async (req, res) => {
   const { status } = req.body;
   
   if (!['Active', 'Pending', 'Closed'].includes(status)) {
@@ -121,17 +110,17 @@ router.put('/:id/auction-status', async (req, res) => {
   
   try {
     const job = await Job.findById(req.params.id);
-    
     if (!job) {
       return res.status(404).json({ error: 'Job not found' });
     }
+
+    if (!checkJobOwnership(job, req.user)) {
+      return res.status(403).json({ error: 'Unauthorized: You do not own this job' });
+    }
     
-    // If starting auction now, update bidding start time
     if (status === 'Active' && job.status !== 'Active') {
       job.biddingStartTime = new Date();
     }
-    
-    // If stopping auction early, update bidding end time to now
     if (status === 'Closed' && job.status === 'Active') {
       job.biddingEndTime = new Date();
     }
@@ -139,45 +128,38 @@ router.put('/:id/auction-status', async (req, res) => {
     job.status = status;
     await job.save();
     
-    // FIXED: Return the updated job in a consistent format
     res.status(200).json({ 
       message: 'Auction status updated successfully', 
-      job: job.toObject()  // Convert to plain object for consistent formatting
+      job: job.toObject()
     });
   } catch (err) {
-    console.error('Error updating auction status:', err);
+    console.error('Error updating auction status:', err.message);
     res.status(500).json({ error: 'Error updating auction status' });
   }
 });
 
-// Add this route to handle job deletion
-router.delete('/:id', async (req, res) => {
+// V04: Delete job with ownership check
+router.delete('/:id', auth, async (req, res) => {
   try {
     const job = await Job.findById(req.params.id);
-    
     if (!job) {
       return res.status(404).json({ error: 'Job not found' });
     }
     
-    // Optional: Add authentication to ensure only the job owner can delete it
-    // if (job.userid !== req.user.id) {
-    //   return res.status(403).json({ error: 'Not authorized to delete this job' });
-    // }
+    if (!checkJobOwnership(job, req.user)) {
+      return res.status(403).json({ error: 'Unauthorized: You do not own this job' });
+    }
     
     await Job.findByIdAndDelete(req.params.id);
-    
-    // Optional: Delete related bids or other associated data
-    // await Bid.deleteMany({ jobId: req.params.id });
-    
     res.status(200).json({ message: 'Job deleted successfully' });
   } catch (err) {
-    console.error('Error deleting job:', err);
+    console.error('Error deleting job:', err.message);
     res.status(500).json({ error: 'Error deleting job' });
   }
 });
 
-// Add this route to handle bid acceptance with milestones in one operation
-router.put('/:id/accept-bid', async (req, res) => {
+// V04: Accept bid with ownership check
+router.put('/:id/accept-bid', auth, async (req, res) => {
   try {
     const { bidId, acceptedBidAmount, milestones } = req.body;
     const job = await Job.findById(req.params.id);
@@ -185,27 +167,30 @@ router.put('/:id/accept-bid', async (req, res) => {
     if (!job) {
       return res.status(404).json({ error: 'Job not found' });
     }
+
+    if (!checkJobOwnership(job, req.user)) {
+      return res.status(403).json({ error: 'Unauthorized: You do not own this job' });
+    }
     
-    // Update job with accepted bid info and milestones
     job.acceptedBid = bidId;
     job.acceptedBidAmount = acceptedBidAmount;
     job.milestones = milestones;
-    job.status = 'Closed'; // Close the auction
+    job.status = 'Closed';
     
     await job.save();
     
     res.status(200).json({ 
       message: 'Bid accepted and milestones saved successfully',
-      job: job
+      job
     });
   } catch (err) {
-    console.error('Error accepting bid:', err);
+    console.error('Error accepting bid:', err.message);
     res.status(500).json({ error: 'Error accepting bid' });
   }
 });
 
-// Add this route for updating job details
-router.put('/:id', async (req, res) => {
+// V04: Update job details with ownership check
+router.put('/:id', auth, async (req, res) => {
   try {
     const { 
       title, 
@@ -219,19 +204,15 @@ router.put('/:id', async (req, res) => {
       milestones
     } = req.body;
 
-    // Find the job by ID
     const job = await Job.findById(req.params.id);
-    
     if (!job) {
       return res.status(404).json({ error: 'Job not found' });
     }
+
+    if (!checkJobOwnership(job, req.user)) {
+      return res.status(403).json({ error: 'Unauthorized: You do not own this job' });
+    }
     
-    // Optional: Check if user is authorized to update this job
-    // if (job.userid !== req.userId) {
-    //   return res.status(403).json({ error: 'Not authorized to update this job' });
-    // }
-    
-    // Update job fields
     job.title = title || job.title;
     job.categories = categories || job.categories;
     job.area = area || job.area;
@@ -241,84 +222,36 @@ router.put('/:id', async (req, res) => {
     job.biddingStartTime = biddingStartTime || job.biddingStartTime;
     job.biddingEndTime = biddingEndTime || job.biddingEndTime;
     
-    // Only update milestones if provided
     if (milestones) {
       job.milestones = milestones;
     }
     
-    // Save the updated job
     await job.save();
-    
     res.status(200).json({ message: 'Job updated successfully', job });
   } catch (err) {
-    console.error('Error updating job:', err);
+    console.error('Error updating job:', err.message);
     res.status(500).json({ error: 'Error updating job' });
   }
 });
 
-// Add this function before module.exports
-// Function to update auction statuses automatically
-const updateAuctionStatus = async (jobId) => {
-  // Validate job ID before attempting to find it
-  if (!jobId || jobId === 'undefined' || jobId === undefined) {
-    console.log("Skipping auction status update - invalid job ID");
-    return;
-  }
-
-  try {
-    const job = await Job.findById(jobId);
-    
-    if (!job) {
-      console.log(`Job with ID ${jobId} not found`);
-      return;
-    }
-    
-    const now = new Date();
-    const endTime = new Date(job.biddingEndTime);
-    const startTime = new Date(job.biddingStartTime);
-    
-    // Update job status based on current time
-    if (job.status === 'Pending' && now >= startTime) {
-      job.status = 'Active';
-      await job.save();
-      console.log(`Job ${job._id} activated (auction started)`);
-    } else if (job.status === 'Active' && now >= endTime) {
-      job.status = 'Closed';
-      await job.save();
-      console.log(`Job ${job._id} closed (auction ended)`);
-    }
-  } catch (error) {
-    console.error(`Error updating auction status for job ${jobId}:`, error);
-  }
-};
-
-// Add an endpoint to check and update all auction statuses
+// Update all auction statuses
 router.get('/update-all-auction-statuses', async (req, res) => {
   try {
-    // Find all jobs that might need status updates
     const pendingJobs = await Job.find({ status: 'Pending' });
     const activeJobs = await Job.find({ status: 'Active' });
-    
     let updatedCount = 0;
     
-    // Check all pending jobs for activation
+    const now = new Date();
     for (const job of pendingJobs) {
-      const now = new Date();
-      const startTime = new Date(job.biddingStartTime);
-      
-      if (now >= startTime) {
+      if (now >= new Date(job.biddingStartTime)) {
         job.status = 'Active';
         await job.save();
         updatedCount++;
       }
     }
     
-    // Check all active jobs for completion
     for (const job of activeJobs) {
-      const now = new Date();
-      const endTime = new Date(job.biddingEndTime);
-      
-      if (now >= endTime) {
+      if (now >= new Date(job.biddingEndTime)) {
         job.status = 'Closed';
         await job.save();
         updatedCount++;
@@ -330,53 +263,47 @@ router.get('/update-all-auction-statuses', async (req, res) => {
       message: `Updated ${updatedCount} jobs` 
     });
   } catch (error) {
-    console.error('Error updating auction statuses:', error);
+    console.error('Error updating auction statuses:', error.message);
     res.status(500).json({ error: 'Failed to update auction statuses' });
   }
 });
 
-// Add route to restart a closed job
-router.put('/:id/restart', async (req, res) => {
+// V04: Restart closed job with ownership check
+router.put('/:id/restart', auth, async (req, res) => {
   try {
     const jobId = req.params.id;
-    
-    // Validate job ID
-    if (!jobId) {
-      return res.status(400).json({ error: 'Invalid job ID' });
-    }
-    
     const job = await Job.findById(jobId);
     
     if (!job) {
       return res.status(404).json({ error: 'Job not found' });
     }
+
+    if (!checkJobOwnership(job, req.user)) {
+      return res.status(403).json({ error: 'Unauthorized: You do not own this job' });
+    }
     
-    // Only allow restarting closed jobs
     if (job.status !== 'Closed') {
       return res.status(400).json({ error: 'Only closed jobs can be restarted' });
     }
     
-    // Set new bidding times (default to 7 days)
     const now = new Date();
     const endDate = new Date();
-    endDate.setDate(now.getDate() + 7); // Default 7 day auction
+    endDate.setDate(now.getDate() + 7);
     
-    // Update with new values from request or use defaults
     const { biddingEndTime } = req.body;
-    
     job.status = 'Active';
     job.biddingStartTime = now;
     job.biddingEndTime = biddingEndTime || endDate;
-    job.wasReopened = true; // Flag to indicate this job was reopened
+    job.wasReopened = true;
     
     await job.save();
     
     res.status(200).json({ 
-      message: 'Job restarted successfully',
-      job: job
+      message: 'Job restarted successfully', 
+      job 
     });
   } catch (err) {
-    console.error('Error restarting job:', err);
+    console.error('Error restarting job:', err.message);
     res.status(500).json({ error: 'Error restarting job' });
   }
 });

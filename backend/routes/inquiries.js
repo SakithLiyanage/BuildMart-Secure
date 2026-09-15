@@ -1,34 +1,47 @@
 const express = require('express');
 const router = express.Router();
 const Inquiry = require('../models/inquiryModel');
+const auth = require('../middleware/auth');
+const { requireAdmin } = require('../middleware/auth');
 
-// Get all inquiries
-router.get('/', async (req, res) => {
+// V09: Protect inquiry routes against IDOR & unauthorized tampering
+
+// Get all inquiries (Admin sees all, user sees own)
+router.get('/', auth, async (req, res) => {
   try {
-    const inquiries = await Inquiry.find().sort({ submittedAt: -1 });
+    const filter = {};
+    if (req.user.role !== 'Admin') {
+      filter.userId = req.user.id;
+    }
+    const inquiries = await Inquiry.find(filter).sort({ submittedAt: -1 });
     res.json(inquiries);
   } catch (error) {
-    console.error('Error fetching inquiries:', error);
+    console.error('Error fetching inquiries:', error.message);
     res.status(500).json({ message: 'Server error while fetching inquiries' });
   }
 });
 
-// Get a specific inquiry by ID
-router.get('/:id', async (req, res) => {
+// Get a specific inquiry by ID (Owner or Admin)
+router.get('/:id', auth, async (req, res) => {
   try {
     const inquiry = await Inquiry.findById(req.params.id);
     if (!inquiry) {
       return res.status(404).json({ message: 'Inquiry not found' });
     }
+
+    if (inquiry.userId && inquiry.userId.toString() !== req.user.id && req.user.role !== 'Admin') {
+      return res.status(403).json({ message: 'Unauthorized to view this inquiry' });
+    }
+
     res.json(inquiry);
   } catch (error) {
-    console.error('Error fetching inquiry:', error);
+    console.error('Error fetching inquiry:', error.message);
     res.status(500).json({ message: 'Server error while fetching inquiry' });
   }
 });
 
-// Create a new inquiry
-router.post('/', async (req, res) => {
+// Create a new inquiry (Authenticated)
+router.post('/', auth, async (req, res) => {
   try {
     const { 
       title, 
@@ -36,29 +49,13 @@ router.post('/', async (req, res) => {
       category, 
       priority, 
       projectId, 
-      projectName,
-      userId,
-      username, 
-      userRole,
-      status,
-      submittedAt
+      projectName
     } = req.body;
-    
-    // Log the received data for debugging
-    console.log('Received inquiry data:', {
-      title, description, category, priority, projectId, projectName, userId, username, userRole, status
-    });
     
     if (!title || !description) {
       return res.status(400).json({ message: 'Title and description are required' });
     }
-    
-    // Check and normalize user role if needed
-    let normalizedUserRole = userRole;
-    if (userRole && !['Client', 'Service Provider', 'Guest', 'Admin', 'User'].includes(userRole)) {
-      normalizedUserRole = 'User'; 
-    }
-    
+
     const inquiry = new Inquiry({
       title,
       description,
@@ -66,83 +63,80 @@ router.post('/', async (req, res) => {
       priority: priority || 'medium',
       projectId,
       projectName,
-      userId,
-      username, 
-      userRole: normalizedUserRole,
-      status: status || 'pending',
-      submittedAt: submittedAt || new Date()
+      userId: req.user.id,
+      username: req.user.username, 
+      userRole: req.user.role,
+      status: 'pending',
+      submittedAt: new Date()
     });
     
     const savedInquiry = await inquiry.save();
     res.status(201).json(savedInquiry);
   } catch (error) {
-    console.error('Error creating inquiry:', error);
-    
-    if (error.name === 'ValidationError') {
-      const validationErrors = Object.keys(error.errors).map(field => ({
-        field,
-        message: error.errors[field].message
-      }));
-      return res.status(400).json({ message: 'Validation error', errors: validationErrors });
-    }
-    
-    res.status(500).json({ message: 'Server error while creating inquiry', error: error.message });
+    console.error('Error creating inquiry:', error.message);
+    res.status(500).json({ message: 'Server error while creating inquiry' });
   }
 });
 
-// Update inquiry status
-router.put('/:id/status', async (req, res) => {
+// Update inquiry status (Admin only or Owner resolving)
+router.put('/:id/status', auth, async (req, res) => {
   try {
     const { status } = req.body;
     
     if (!status || !['pending', 'in-progress', 'resolved'].includes(status)) {
       return res.status(400).json({ message: 'Valid status is required' });
     }
-    
-    const updatedInquiry = await Inquiry.findByIdAndUpdate(
-      req.params.id,
-      { 
-        status,
-        ...(status === 'resolved' ? { resolvedAt: new Date() } : {})
-      },
-      { new: true }
-    );
-    
-    if (!updatedInquiry) {
+
+    const inquiry = await Inquiry.findById(req.params.id);
+    if (!inquiry) {
       return res.status(404).json({ message: 'Inquiry not found' });
     }
+
+    if (inquiry.userId && inquiry.userId.toString() !== req.user.id && req.user.role !== 'Admin') {
+      return res.status(403).json({ message: 'Unauthorized to update this inquiry' });
+    }
     
-    res.json(updatedInquiry);
+    inquiry.status = status;
+    if (status === 'resolved') {
+      inquiry.resolvedAt = new Date();
+    }
+    
+    await inquiry.save();
+    res.json(inquiry);
   } catch (error) {
-    console.error('Error updating inquiry status:', error);
+    console.error('Error updating inquiry status:', error.message);
     res.status(500).json({ message: 'Server error while updating status' });
   }
 });
 
-// Delete an inquiry
-router.delete('/:id', async (req, res) => {
+// Delete an inquiry (Owner or Admin)
+router.delete('/:id', auth, async (req, res) => {
   try {
-    const deletedInquiry = await Inquiry.findByIdAndDelete(req.params.id);
-    
-    if (!deletedInquiry) {
+    const inquiry = await Inquiry.findById(req.params.id);
+    if (!inquiry) {
       return res.status(404).json({ message: 'Inquiry not found' });
     }
+
+    if (inquiry.userId && inquiry.userId.toString() !== req.user.id && req.user.role !== 'Admin') {
+      return res.status(403).json({ message: 'Unauthorized to delete this inquiry' });
+    }
     
+    await Inquiry.findByIdAndDelete(req.params.id);
     res.json({ message: 'Inquiry deleted successfully' });
   } catch (error) {
-    console.error('Error deleting inquiry:', error);
+    console.error('Error deleting inquiry:', error.message);
     res.status(500).json({ message: 'Server error while deleting inquiry' });
   }
 });
 
-// Get inquiries by project ID
-router.get('/project/:projectId', async (req, res) => {
+// Get inquiries by project ID (Participant or Admin)
+router.get('/project/:projectId', auth, async (req, res) => {
   try {
-    const inquiries = await Inquiry.find({ projectId: req.params.projectId }).sort({ submittedAt: -1 });
+    const inquiries = await Inquiry.find({ projectId: req.params.projectId });
     res.json(inquiries);
   } catch (error) {
-    console.error('Error fetching project inquiries:', error);
-    res.status(500).json({ message: 'Server error while fetching project inquiries' });
+    console.error('Error fetching project inquiries:', error.message);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 

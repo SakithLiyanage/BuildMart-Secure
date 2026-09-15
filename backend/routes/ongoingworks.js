@@ -4,21 +4,16 @@ const OngoingWork = require('../models/Ongoingworkmodel');
 const Job = require('../models/Job');
 const Contractor = require('../models/Contractor');
 const mongoose = require('mongoose');
+const auth = require('../middleware/auth');
+const { requireAdmin } = require('../middleware/auth');
 
 const COMMISSION_RATE = 0.10; 
 
 // Helper function to increment contractor's completed projects
 const incrementCompletedProjects = async (contractorId) => {
   try {
-    console.log(`Incrementing completed projects for contractor: ${contractorId}`);
-    
-    // Find the contractor by userId
     const contractor = await Contractor.findOne({ userId: contractorId });
-    
-    if (!contractor) {
-      console.error(`Contractor not found with userId: ${contractorId}`);
-      return false;
-    }
+    if (!contractor) return false;
     
     const completedWorks = await OngoingWork.countDocuments({
       contractorId: contractorId,
@@ -26,180 +21,150 @@ const incrementCompletedProjects = async (contractorId) => {
     });
     
     const manualCount = contractor.manualCompletedProjects || 0;
-    
-    // Set the completedProjects field to the sum of manual + system counts
     contractor.completedProjects = manualCount + completedWorks;
-    
-    // Save the updated contractor document
     await contractor.save();
-    
-    console.log(`Successfully updated completed projects count to ${contractor.completedProjects} for contractor: ${contractorId}`);
-    console.log(`(${manualCount} manual + ${completedWorks} system)`);
     return true;
   } catch (error) {
-    console.error('Error incrementing completed projects:', error);
+    console.error('Error incrementing completed projects:', error.message);
     return false;
   }
 };
 
-// Get all ongoing works (admin only)
-router.get('/admin/all', async (req, res) => {
+const isAuthorizedParticipant = (work, user) => {
+  if (!work || !user) return false;
+  if (user.role === 'Admin') return true;
+  const cId = work.clientId?.toString();
+  const contId = work.contractorId?.toString();
+  return cId === user.id.toString() || contId === user.id.toString();
+};
+
+// V06: Get all ongoing works (Admin only)
+router.get('/admin/all', auth, requireAdmin, async (req, res) => {
   try {
     const ongoingWorks = await OngoingWork.find().populate('jobId');
     res.status(200).json(ongoingWorks);
   } catch (error) {
-    console.error('Error fetching ongoing works:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    console.error('Error fetching ongoing works:', error.message);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Get ongoing works for a specific client
-router.get('/client/:clientId', async (req, res) => {
+// V06: Get ongoing works for a specific client (Client self or Admin)
+router.get('/client/:clientId', auth, async (req, res) => {
   try {
     const { clientId } = req.params;
-    console.log(`[DEBUG] Fetching ongoing works for client: ${clientId}`);
     
-    // Check if clientId seems valid
-    if (!clientId || clientId === 'undefined' || clientId === 'null') {
-      console.error(`[DEBUG] Invalid clientId provided: ${clientId}`);
-      return res.status(400).json({ message: 'Invalid client ID' });
+    if (req.user.id !== clientId && req.user.role !== 'Admin') {
+      return res.status(403).json({ message: 'Unauthorized access to client projects' });
     }
 
-    // Try to find works both with string and ObjectId versions of clientId
-    let ongoingWorks;
-    try {
-      ongoingWorks = await OngoingWork.find({ clientId }).populate('jobId');
-      console.log(`[DEBUG] Found ${ongoingWorks.length} works with string clientId`);
-      
-      if (ongoingWorks.length === 0 && clientId.match(/^[0-9a-fA-F]{24}$/)) {
-        const objectIdClientId = new mongoose.Types.ObjectId(clientId);
-        const objectIdWorks = await OngoingWork.find({ 
-          clientId: objectIdClientId 
-        }).populate('jobId');
-        
-        console.log(`[DEBUG] Found ${objectIdWorks.length} works with ObjectId clientId`);
-        
-        if (objectIdWorks.length > 0) {
-          ongoingWorks = objectIdWorks;
-        }
-      }
-    } catch (findError) {
-      console.error('[DEBUG] Error during find operation:', findError);
-      throw findError; 
+    let ongoingWorks = await OngoingWork.find({ clientId }).populate('jobId');
+    if (ongoingWorks.length === 0 && clientId.match(/^[0-9a-fA-F]{24}$/)) {
+      const objectIdClientId = new mongoose.Types.ObjectId(clientId);
+      const objectIdWorks = await OngoingWork.find({ clientId: objectIdClientId }).populate('jobId');
+      if (objectIdWorks.length > 0) ongoingWorks = objectIdWorks;
     }
 
-    // Log the result counts
-    console.log(`[DEBUG] Total ongoing works found: ${ongoingWorks.length}`);
-    
-    // Add work IDs to log for debugging
-    if (ongoingWorks.length > 0) {
-      console.log('[DEBUG] Work IDs found:', ongoingWorks.map(work => work._id));
-    }
-    
     res.status(200).json(ongoingWorks);
   } catch (error) {
-    console.error('[DEBUG] Error fetching client ongoing works:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    console.error('Error fetching client ongoing works:', error.message);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Get ongoing works for a specific contractor
-router.get('/contractor/:contractorId', async (req, res) => {
+// V06: Get ongoing works for a specific contractor (Contractor self or Admin)
+router.get('/contractor/:contractorId', auth, async (req, res) => {
   try {
-    const ongoingWorks = await OngoingWork.find({ contractorId: req.params.contractorId }).populate('jobId');
+    const { contractorId } = req.params;
+    if (req.user.id !== contractorId && req.user.role !== 'Admin') {
+      return res.status(403).json({ message: 'Unauthorized access to contractor projects' });
+    }
+
+    const ongoingWorks = await OngoingWork.find({ contractorId }).populate('jobId');
     res.status(200).json(ongoingWorks);
   } catch (error) {
-    console.error('Error fetching contractor ongoing works:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    console.error('Error fetching contractor ongoing works:', error.message);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Get a specific ongoing work by ID
-router.get('/:id', async (req, res) => {
+// Get a specific ongoing work by ID (Participant or Admin)
+router.get('/:id', auth, async (req, res) => {
   try {
     const ongoingWork = await OngoingWork.findById(req.params.id).populate('jobId');
     if (!ongoingWork) {
       return res.status(404).json({ message: 'Ongoing work not found' });
     }
+
+    if (!isAuthorizedParticipant(ongoingWork, req.user)) {
+      return res.status(403).json({ message: 'Unauthorized to view this ongoing work' });
+    }
+
     res.status(200).json(ongoingWork);
   } catch (error) {
-    console.error('Error fetching ongoing work details:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    console.error('Error fetching ongoing work details:', error.message);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Get ongoing work by job ID
-router.get('/job/:jobId', async (req, res) => {
+// Get ongoing work by job ID (Participant or Admin)
+router.get('/job/:jobId', auth, async (req, res) => {
   try {
     const ongoingWork = await OngoingWork.findOne({ jobId: req.params.jobId });
     if (!ongoingWork) {
       return res.status(404).json({ message: 'Ongoing work not found for this job' });
     }
+
+    if (!isAuthorizedParticipant(ongoingWork, req.user)) {
+      return res.status(403).json({ message: 'Unauthorized to view this work' });
+    }
+
     res.status(200).json(ongoingWork);
   } catch (error) {
-    console.error('Error fetching ongoing work by job ID:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    console.error('Error fetching ongoing work by job ID:', error.message);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Create a new ongoing work
-router.post('/', async (req, res) => {
+// Create a new ongoing work (Authenticated)
+router.post('/', auth, async (req, res) => {
   try {
     const { jobId, clientId, contractorId, milestones, totalPrice, timeline } = req.body;
     
-    console.log('[DEBUG] Creating new ongoing work:', {
-      jobId, clientId, contractorId, timeline, totalPrice,
-      milestonesCount: milestones?.length
-    });
-    
-    // Validate required fields
-    if (!jobId || !clientId || !contractorId) {
-      console.error('[DEBUG] Missing required field in ongoing work creation');
-      return res.status(400).json({ message: 'jobId, clientId, and contractorId are required fields' });
+    if (!jobId || !clientId || !contractorId || totalPrice === undefined) {
+      return res.status(400).json({ message: 'Missing required fields for ongoing work creation' });
     }
-    
-    // Validate totalPrice (required field)
-    if (totalPrice === undefined || totalPrice === null) {
-      console.error('[DEBUG] Missing totalPrice in ongoing work creation');
-      return res.status(400).json({ message: 'totalPrice is a required field' });
+
+    if (req.user.id !== clientId.toString() && req.user.role !== 'Admin') {
+      return res.status(403).json({ message: 'Unauthorized: Only client or admin can initiate ongoing work' });
     }
-    
-    // Check if job exists
+
     const job = await Job.findById(jobId);
     if (!job) {
-      console.error(`[DEBUG] Job not found: ${jobId}`);
       return res.status(404).json({ message: 'Job not found' });
     }
     
-    // Check if ongoing work for this job already exists
     const existingWork = await OngoingWork.findOne({ jobId });
     if (existingWork) {
-      console.log(`[DEBUG] Ongoing work already exists for job: ${jobId}`);
       return res.status(409).json({ 
         message: 'An ongoing work for this job already exists',
         existingWorkId: existingWork._id
       });
     }
     
-    // Parse timeline as number with fallback
     const parsedTimeline = parseInt(timeline) || 30;
-    // console.log(`[DEBUG] Creating ongoing work with timeline: ${parsedTimeline} days`);
     
-    // Calculate initial totalAmountPending with better validation
     let totalAmountPending = 0;
     if (milestones && Array.isArray(milestones) && milestones.length > 0) {
       totalAmountPending = milestones.reduce((sum, milestone) => {
-        const amount = parseInt(milestone.amount) || 0;
-        return sum + amount;
+        return sum + (parseInt(milestone.amount) || 0);
       }, 0);
-    } else {
-      console.warn('[DEBUG] No valid milestones provided for ongoing work');
     }
     
     const newOngoingWork = new OngoingWork({
       jobId,
-      clientId: clientId.toString(), // Ensure clientId is stored as string for consistency
-      contractorId: contractorId.toString(), // Ensure contractorId is stored as string
+      clientId: clientId.toString(),
+      contractorId: contractorId.toString(),
       milestones: milestones || [],
       totalAmountPending,
       totalPrice: Number(totalPrice),
@@ -208,49 +173,38 @@ router.post('/', async (req, res) => {
       jobStatus: 'In Progress'
     });
     
-    console.log('[DEBUG] Saving new ongoing work with structure:', {
-      jobId: newOngoingWork.jobId,
-      clientId: newOngoingWork.clientId,
-      contractorId: newOngoingWork.contractorId,
-      milestoneCount: newOngoingWork.milestones.length,
-      timeline: newOngoingWork.timeline
-    });
-    
     const savedWork = await newOngoingWork.save();
-    
-    // Update job status to indicate it's now in progress
     await Job.findByIdAndUpdate(jobId, { status: 'Active' });
     
-    console.log(`[DEBUG] Successfully created ongoing work: ${savedWork._id}`);
     res.status(201).json(savedWork);
   } catch (error) {
-    console.error('[DEBUG] Error creating ongoing work:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    console.error('Error creating ongoing work:', error.message);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Update ongoing work details
-router.put('/:id', async (req, res) => {
+// Update ongoing work details (Participant or Admin)
+router.put('/:id', auth, async (req, res) => {
   try {
     const { workProgress, jobStatus, milestones, totalPrice } = req.body;
     const ongoingWorkId = req.params.id;
     
-    // Find the ongoing work
     const ongoingWork = await OngoingWork.findById(ongoingWorkId);
     if (!ongoingWork) {
       return res.status(404).json({ message: 'Ongoing work not found' });
     }
+
+    if (!isAuthorizedParticipant(ongoingWork, req.user)) {
+      return res.status(403).json({ message: 'Unauthorized to update this ongoing work' });
+    }
     
-    // Track if job status changes to completed
     const becomingCompleted = jobStatus === 'Completed' && ongoingWork.jobStatus !== 'Completed';
     
-    // Update fields
     if (workProgress !== undefined) ongoingWork.workProgress = workProgress;
     if (jobStatus) ongoingWork.jobStatus = jobStatus;
     if (milestones) ongoingWork.milestones = milestones;
     if (totalPrice !== undefined) ongoingWork.totalPrice = Number(totalPrice);
     
-    // Recalculate amounts if milestones were updated
     if (milestones) {
       let totalAmountPending = 0;
       let totalAmountPaid = 0;
@@ -268,37 +222,32 @@ router.put('/:id', async (req, res) => {
       ongoingWork.totalAmountPending = totalAmountPending;
     }
     
-    // Mark job as completed if work is completed
     if (becomingCompleted) {
       await Job.findByIdAndUpdate(ongoingWork.jobId, { status: 'Closed' });
-      
-      // Increment contractor's completed projects count
       await incrementCompletedProjects(ongoingWork.contractorId);
     }
     
     await ongoingWork.save();
     res.status(200).json(ongoingWork);
   } catch (error) {
-    console.error('Error updating ongoing work:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    console.error('Error updating ongoing work:', error.message);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Update milestone status
-router.patch('/:id/milestone/:milestoneIndex', async (req, res) => {
+// Update milestone status (Participant or Admin)
+router.patch('/:id/milestone/:milestoneIndex', auth, async (req, res) => {
   try {
     const { status, actualAmountPaid, completedAt, notes } = req.body;
     const { id, milestoneIndex } = req.params;
     
-    console.log('Milestone update request:', {
-      workId: id,
-      milestoneIndex,
-      requestBody: req.body,
-    });
-    
     const ongoingWork = await OngoingWork.findById(id);
     if (!ongoingWork) {
       return res.status(404).json({ message: 'Ongoing work not found' });
+    }
+
+    if (!isAuthorizedParticipant(ongoingWork, req.user)) {
+      return res.status(403).json({ message: 'Unauthorized to update milestone' });
     }
     
     const milestoneIdx = parseInt(milestoneIndex);
@@ -306,7 +255,6 @@ router.patch('/:id/milestone/:milestoneIndex', async (req, res) => {
       return res.status(400).json({ message: 'Invalid milestone index' });
     }
     
-    // Update milestone status
     if (status) {
       const validStatuses = ['Pending', 'In Progress', 'Pending Verification', 'Ready For Payment', 'Completed'];
       if (!validStatuses.includes(status)) {
@@ -317,7 +265,6 @@ router.patch('/:id/milestone/:milestoneIndex', async (req, res) => {
       
       ongoingWork.milestones[milestoneIdx].status = status;
       
-      // If status is changing to 'Pending Verification', set completedAt if not already set
       if (status === 'Pending Verification' && !ongoingWork.milestones[milestoneIdx].completedAt) {
         ongoingWork.milestones[milestoneIdx].completedAt = completedAt || new Date();
       }
@@ -326,32 +273,25 @@ router.patch('/:id/milestone/:milestoneIndex', async (req, res) => {
         ongoingWork.milestones[milestoneIdx].actualAmountPaid = actualAmountPaid;
         ongoingWork.lastPaymentDate = new Date();
         
-        // Calculate commission
         const originalAmount = parseFloat(ongoingWork.milestones[milestoneIdx].amount || 0);
         const commission = originalAmount * COMMISSION_RATE;
         
-        // Store commission information
         ongoingWork.milestones[milestoneIdx].commission = commission;
         ongoingWork.milestones[milestoneIdx].originalAmount = originalAmount;
-        
-        // Update total commission
         ongoingWork.totalCommission = (ongoingWork.totalCommission || 0) + commission;
       }
     }
     
-    // Add notes if provided
     if (notes) {
       ongoingWork.milestones[milestoneIdx].notes = notes;
     }
     
-    // Recalculate amounts and progress
     let completedCount = 0;
     let totalAmountPaid = 0;
     let totalAmountPending = 0;
     
     ongoingWork.milestones.forEach(milestone => {
       const amount = parseFloat(milestone.amount || 0);
-      
       if (milestone.status === 'Completed') {
         totalAmountPaid += milestone.actualAmountPaid || amount;
         completedCount++;
@@ -364,14 +304,10 @@ router.patch('/:id/milestone/:milestoneIndex', async (req, res) => {
       }
     });
     
-    // Update financial totals
     ongoingWork.totalAmountPaid = totalAmountPaid;
     ongoingWork.totalAmountPending = totalAmountPending;
-    
-    // Calculate progress percentage
     ongoingWork.workProgress = Math.round((completedCount / ongoingWork.milestones.length) * 100);
     
-    // Check if all milestones are completed for job status update
     const allCompleted = ongoingWork.milestones.every(m => m.status === 'Completed');
     if (allCompleted) {
       const wasAlreadyCompleted = ongoingWork.jobStatus === 'Completed';
@@ -379,7 +315,6 @@ router.patch('/:id/milestone/:milestoneIndex', async (req, res) => {
       ongoingWork.workProgress = 100;
       await Job.findByIdAndUpdate(ongoingWork.jobId, { status: 'Closed' });
       
-      // Only increment completed projects if the job wasn't already completed
       if (!wasAlreadyCompleted) {
         await incrementCompletedProjects(ongoingWork.contractorId);
       }
@@ -388,26 +323,22 @@ router.patch('/:id/milestone/:milestoneIndex', async (req, res) => {
     await ongoingWork.save();
     res.status(200).json(ongoingWork);
   } catch (error) {
-    console.error('Error updating milestone:', error);
-    res.status(500).json({ message: 'Server error', error: error.message });
+    console.error('Error updating milestone:', error.message);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
-// New endpoint to get completed project counts for a contractor
+// Endpoint to get completed project counts for a contractor
 router.get('/completed-count/:contractorId', async (req, res) => {
   try {
     const { contractorId } = req.params;
-    console.log(`Fetching completed projects count for contractor: ${contractorId}`);
     
-    // Get count of completed works from OngoingWork collection
     const systemCompletedCount = await OngoingWork.countDocuments({ 
-      contractorId: contractorId, 
+      contractorId, 
       jobStatus: 'Completed' 
     });
     
-    // Get the contractor record to find manually entered count
     const contractor = await Contractor.findOne({ userId: contractorId });
-    
     if (!contractor) {
       return res.status(404).json({ 
         message: 'Contractor not found',
@@ -417,26 +348,16 @@ router.get('/completed-count/:contractorId', async (req, res) => {
       });
     }
     
-    // Get the manual count (if available)
     const manualCompletedCount = contractor.manualCompletedProjects || 0;
-    
-    // Return all counts
     res.status(200).json({
       message: 'Completed projects counts retrieved successfully',
       systemCount: systemCompletedCount,
       manualCount: manualCompletedCount,
       totalCount: systemCompletedCount + manualCompletedCount
     });
-    
   } catch (error) {
-    console.error('Error fetching completed projects count:', error);
-    res.status(500).json({ 
-      message: 'Server error', 
-      error: error.message,
-      systemCount: 0,
-      manualCount: 0,
-      totalCount: 0
-    });
+    console.error('Error fetching completed projects count:', error.message);
+    res.status(500).json({ message: 'Server error' });
   }
 });
 
