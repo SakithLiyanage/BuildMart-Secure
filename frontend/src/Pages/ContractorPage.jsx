@@ -11,12 +11,14 @@ import EditContractorProfile from '../components/EditContractorProfile';
 import QualificationsManager from '../components/QualificationsManager';
 import EditUserDetails from '../components/EditUserDetails';
 
+const DEFAULT_AVATAR = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%239CA3AF'%3E%3Cpath fill-rule='evenodd' d='M18.685 19.097A9.723 9.723 0 0021.75 12c0-5.385-4.365-9.75-9.75-9.75S2.25 6.615 2.25 12a9.723 9.723 0 003.065 7.097A9.716 9.716 0 0012 21.75a9.716 9.716 0 006.685-2.653zm-12.54-1.285A7.486 7.486 0 0112 15a7.486 7.486 0 015.855 2.812A8.224 8.224 0 0112 20.25a8.224 8.224 0 01-5.855-2.438zM15.75 9a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z' clip-rule='evenodd'/%3E%3C/svg%3E";
+
 function ProfileImage({ profilePicPath, className = "", size = "medium" }) {
   const imgSrc = profilePicPath
-    ? profilePicPath.startsWith('http') 
+    ? (profilePicPath.startsWith('http://') || profilePicPath.startsWith('https://') || profilePicPath.startsWith('data:'))
       ? profilePicPath 
-      : `http://localhost:5000${profilePicPath}`
-    : '/default-profile.png'; 
+      : `http://localhost:5000${profilePicPath.startsWith('/') ? '' : '/'}${profilePicPath}`
+    : DEFAULT_AVATAR; 
 
   const sizeMap = {
     small: "h-10 w-10",
@@ -65,8 +67,8 @@ function ProfileImage({ profilePicPath, className = "", size = "medium" }) {
               objectPosition: 'center',
             }}
             onError={(e) => {
-              e.target.src = '/default-profile.png';
-              console.log("Failed to load profile image:", profilePicPath);
+              e.target.onerror = null;
+              e.target.src = DEFAULT_AVATAR;
             }} 
           />
         </div>
@@ -76,16 +78,35 @@ function ProfileImage({ profilePicPath, className = "", size = "medium" }) {
 }
 
 const ContractorProfile = () => {
-  // Personal info state
-  const [personalInfo, setPersonalInfo] = useState({
-    firstName: '',
-    lastName: '', 
-    username: '',
-    email: '',
-    password: '******',
-    address: '',
-    phone: '',
-    profilePic: null
+  // Personal info state - pre-populated from JWT token immediately to avoid delay or missing fields
+  const [personalInfo, setPersonalInfo] = useState(() => {
+    try {
+      const token = localStorage.getItem('token') || sessionStorage.getItem('token');
+      if (token) {
+        const decoded = jwtDecode(token);
+        const nameParts = decoded.username ? decoded.username.split(' ') : ['', ''];
+        return {
+          firstName: nameParts[0] || decoded.name || decoded.username || '',
+          lastName: nameParts.slice(1).join(' ') || '',
+          username: decoded.username || decoded.name || '',
+          email: decoded.email || '',
+          password: '******',
+          address: '',
+          phone: '',
+          profilePic: decoded.profilePic || null
+        };
+      }
+    } catch (e) {}
+    return {
+      firstName: '',
+      lastName: '', 
+      username: '',
+      email: '',
+      password: '******',
+      address: '',
+      phone: '',
+      profilePic: null
+    };
   });
 
   // State for UI
@@ -232,7 +253,8 @@ const ContractorProfile = () => {
   // Fetch user profile data
   const fetchUserProfile = async () => {
     const userId = getUserId();
-    if (!userId) {
+    const token = getToken();
+    if (!userId || !token) {
       toast.error('Authentication required. Please log in again.');
       navigate('/login');
       return;
@@ -240,26 +262,41 @@ const ContractorProfile = () => {
 
     setIsLoading(true);
     try {
-      const response = await axios.get(`http://localhost:5000/auth/user/${userId}`);
+      const response = await axios.get(`http://localhost:5000/auth/user/${userId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
       console.log('User data response:', response.data);
       
-      const userData = response.data.user; 
+      const userData = response.data?.user; 
       
       if (userData) {
         const nameParts = userData.username ? userData.username.split(' ') : ['', ''];
         
         setPersonalInfo(prev => ({
           ...prev,
-          firstName: nameParts[0] || '',
-          lastName: nameParts.length > 1 ? nameParts.slice(1).join(' ') : '',
-          username: userData.username || '',
-          email: userData.email || '',
+          firstName: nameParts[0] || userData.username || prev.firstName,
+          lastName: nameParts.slice(1).join(' ') || prev.lastName,
+          username: userData.username || prev.username || '',
+          email: userData.email || prev.email || '',
           password: '******',
           profilePic: userData.profilePic || prev.profilePic
         }));
       }
     } catch (error) {
       console.error('Error fetching user profile:', error);
+      // Fallback: decode token to populate email and username
+      try {
+        const decoded = jwtDecode(token);
+        setPersonalInfo(prev => ({
+          ...prev,
+          username: prev.username || decoded.username || decoded.name || '',
+          email: prev.email || decoded.email || '',
+          firstName: prev.firstName || decoded.username || '',
+          profilePic: prev.profilePic || decoded.profilePic || null
+        }));
+      } catch (decodeErr) {
+        console.warn('Token fallback decode failed:', decodeErr);
+      }
       setError('Failed to load your profile. Please try again.');
     } finally {
       setIsLoading(false);
@@ -269,18 +306,36 @@ const ContractorProfile = () => {
   // Fetch contractor specific data
   const fetchContractorData = async () => {
     const userId = getUserId();
+    const token = getToken();
     if (!userId) return;
     
     try {
-      const response = await axios.get(`http://localhost:5000/api/contractors/user/${userId}`);
+      const response = await axios.get(`http://localhost:5000/api/contractors/user/${userId}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
       setContractorInfo(response.data);
       
-      // Update personal info with contractor data
-      setPersonalInfo(prev => ({
-        ...prev,
-        address: response.data.address || prev.address,
-        phone: response.data.phone || prev.phone
-      }));
+      // Update personal info with contractor and populated user data
+      const populatedUser = response.data?.userId;
+      const isPopulatedObj = populatedUser && typeof populatedUser === 'object';
+      const populatedUsername = isPopulatedObj ? populatedUser.username : '';
+      const populatedEmail = isPopulatedObj ? populatedUser.email : '';
+      const populatedPic = isPopulatedObj ? populatedUser.profilePic : null;
+
+      setPersonalInfo(prev => {
+        const effectiveUsername = prev.username || populatedUsername || '';
+        const nameParts = effectiveUsername ? effectiveUsername.split(' ') : ['', ''];
+        return {
+          ...prev,
+          firstName: prev.firstName || nameParts[0] || effectiveUsername,
+          lastName: prev.lastName || nameParts.slice(1).join(' ') || '',
+          username: effectiveUsername,
+          email: prev.email || populatedEmail || '',
+          profilePic: prev.profilePic || populatedPic || null,
+          address: response.data?.address || prev.address,
+          phone: response.data?.phone || prev.phone
+        };
+      });
     } catch (error) {
       console.error("Error fetching contractor data:", error);
     }
@@ -289,10 +344,13 @@ const ContractorProfile = () => {
   // Fetch profile picture separately
   const fetchProfilePicture = async () => {
     const userId = getUserId();
-    if (!userId) return;
+    const token = getToken();
+    if (!userId || !token) return;
     
     try {
-      const response = await axios.get(`http://localhost:5000/auth/user/${userId}`);
+      const response = await axios.get(`http://localhost:5000/auth/user/${userId}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
       
       if (response.data && response.data.user && response.data.user.profilePic) {
         console.log('Profile picture fetched:', response.data.user.profilePic);
@@ -562,7 +620,13 @@ const ContractorProfile = () => {
                           transition={{ delay: 0.2 }}
                           className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-gray-800 to-blue-800"
                         >
-                          {personalInfo.firstName} {personalInfo.lastName}
+                          {(personalInfo.firstName || personalInfo.lastName) 
+                            ? `${personalInfo.firstName} ${personalInfo.lastName}`.trim() 
+                            : personalInfo.username 
+                            ? personalInfo.username
+                            : (typeof contractorInfo?.userId === 'object' && contractorInfo.userId?.username)
+                            ? contractorInfo.userId.username
+                            : 'Contractor'}
                         </motion.h2>
                         <motion.p 
                           initial={{ opacity: 0 }}
@@ -570,7 +634,9 @@ const ContractorProfile = () => {
                           transition={{ delay: 0.3 }}
                           className="text-gray-600"
                         >
-                          @{personalInfo.username}
+                          @{personalInfo.username 
+                            || (typeof contractorInfo?.userId === 'object' && contractorInfo.userId?.username)
+                            || 'contractor'}
                         </motion.p>
 
                         {contractorInfo?.verified && (
@@ -609,8 +675,10 @@ const ContractorProfile = () => {
                             className="flex items-center"
                           >
                             <span className="font-medium w-24 text-gray-600">Email:</span>
-                            <span className="text-gray-800 bg-gray-50 px-3 py-1.5 rounded-md flex-1">
-                              {personalInfo.email}
+                            <span className="text-gray-800 bg-gray-50 px-3 py-1.5 rounded-md flex-1 break-all">
+                              {personalInfo.email 
+                                || (typeof contractorInfo?.userId === 'object' && contractorInfo.userId?.email)
+                                || "Not specified"}
                             </span>
                           </motion.li>
                           <motion.li 

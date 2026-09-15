@@ -4,6 +4,7 @@ const Contractor = require('../models/Contractor');
 const OngoingWork = require('../models/Ongoingworkmodel');
 const mongoose = require('mongoose');
 const jwt = require('jsonwebtoken'); 
+const auth = require('../middleware/auth'); 
 
 router.post('/', async (req, res) => {
   try {
@@ -198,12 +199,17 @@ router.get('/:userId', async (req, res) => {
   }
 });
 
-router.put('/:id', async (req, res) => {
+router.put('/:id', auth, async (req, res) => {
   try {
     let contractor = await Contractor.findById(req.params.id);
     
     if (!contractor) {
       return res.status(404).json({ error: 'Contractor not found' });
+    }
+
+    // V10: IDOR ownership verification
+    if (contractor.userId.toString() !== req.user.id && req.user.role !== 'Admin') {
+      return res.status(403).json({ error: 'Unauthorized to modify this contractor profile' });
     }
     
     const updateData = {};
@@ -301,10 +307,14 @@ router.get('/refresh-completed-projects/:userId', async (req, res) => {
   }
 });
 
-router.post('/fix-project-counts/:userId', async (req, res) => {
+router.post('/fix-project-counts/:userId', auth, async (req, res) => {
   try {
     const { userId } = req.params;
     const { resetManualTo } = req.body;
+
+    if (userId !== req.user.id && req.user.role !== 'Admin') {
+      return res.status(403).json({ error: 'Unauthorized to modify project metrics' });
+    }
     
     console.log(`Fixing completed projects counts for contractor: ${userId}`);
     console.log(`Request to set manual count to: ${resetManualTo !== undefined ? resetManualTo : '(not specified)'}`);

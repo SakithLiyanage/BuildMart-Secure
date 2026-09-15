@@ -117,23 +117,39 @@ const ClientNavBar = () => {
     
     if (token) {
       try {
+        // Clear old legacy placeholder tokens
+        if (token.includes('placeholder')) {
+          localStorage.removeItem("token");
+          sessionStorage.removeItem("token");
+          setUser(null);
+          return;
+        }
+
         // Decode the token to get user data
         const decoded = jwtDecode(token);
+        
+        if (!decoded || typeof decoded !== 'object') {
+          throw new Error('Invalid token structure');
+        }
+
+        const fallbackName = decoded.username || decoded.name || (decoded.email ? decoded.email.split('@')[0] : 'User');
         
         // Create a user object from the decoded token
         const userData = {
           _id: decoded.userId || decoded.id,
-          username: decoded.username || decoded.name,
-          email: decoded.email,
-          role: decoded.role,
+          username: fallbackName,
+          email: decoded.email || '',
+          role: decoded.role || 'Client',
+          profilePic: decoded.profilePic || null
         };
         
         // Set the user state
         setUser(userData);
-        
       } catch (error) {
-        console.error("Error decoding token:", error);
-        // Handle invalid token (e.g., by redirecting to login)
+        console.warn("Error decoding token, clearing stale session:", error);
+        localStorage.removeItem("token");
+        sessionStorage.removeItem("token");
+        setUser(null);
       }
     }
   }, []);
@@ -262,10 +278,10 @@ const ClientNavBar = () => {
                   />
                 ) : (
                   <div className="w-8 h-8 rounded-full bg-gradient-to-r from-blue-400 to-blue-600 flex items-center justify-center text-white">
-                    {user.username.charAt(0).toUpperCase()}
+                    {(user.username || user.name || 'U').charAt(0).toUpperCase()}
                   </div>
                 )}
-                <span className="text-gray-800 font-medium">Hi, {user.username}</span>
+                <span className="text-gray-800 font-medium">Hi, {user.username || user.name || 'User'}</span>
                 <FaChevronDown className={`text-xs transition-transform ${showUserMenu ? 'rotate-180' : ''}`} />
               </div>
               
@@ -418,11 +434,11 @@ const ClientNavBar = () => {
                       />
                     ) : (
                       <div className="w-10 h-10 rounded-full bg-gradient-to-r from-blue-400 to-blue-600 flex items-center justify-center text-white text-lg">
-                        {user.username.charAt(0).toUpperCase()}
+                        {(user.username || user.name || 'U').charAt(0).toUpperCase()}
                       </div>
                     )}
                     <div>
-                      <p className="font-medium">{user.username}</p>
+                      <p className="font-medium">{user.username || user.name || 'User'}</p>
                       <p className="text-sm text-gray-500">{user.email}</p>
                     </div>
                   </div>

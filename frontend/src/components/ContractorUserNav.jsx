@@ -14,7 +14,14 @@ const ContractorUserNav = () => {
   const [loading, setLoading] = useState(true);
   const [showDropdown, setShowDropdown] = useState(false);
   const [isScrolled, setIsScrolled] = useState(false);
+  const [imgError, setImgError] = useState(false);
   const dropdownRef = useRef(null);
+
+  const getProfileImageUrl = (path) => {
+    if (!path) return null;
+    if (path.startsWith('http://') || path.startsWith('https://') || path.startsWith('data:')) return path;
+    return `http://localhost:5000${path.startsWith('/') ? '' : '/'}${path}`;
+  };
 
   useEffect(() => {
     const handleScroll = () => {
@@ -184,15 +191,15 @@ const ContractorUserNav = () => {
               className="flex items-center space-x-2 cursor-pointer bg-gradient-to-r from-blue-50 to-gray-100 py-2 px-4 rounded-full border border-gray-200 hover:shadow-md transition-all"
               onClick={() => setShowDropdown(!showDropdown)}
             >
-              {userData?.profilePic ? (
+              {userData?.profilePic && !imgError ? (
                 <img
-                  src={userData.profilePic.includes('data:') ? userData.profilePic : 
-                       `http://localhost:5000${userData.profilePic}`}
-                  alt="Profile"
+                  src={getProfileImageUrl(userData.profilePic)}
+                  alt=""
                   className="w-8 h-8 rounded-full border-2 border-blue-500 object-cover"
+                  onError={() => setImgError(true)}
                 />
               ) : (
-                <div className="w-8 h-8 rounded-full bg-gradient-to-r from-blue-400 to-blue-600 flex items-center justify-center text-white">
+                <div className="w-8 h-8 rounded-full bg-gradient-to-r from-blue-400 to-blue-600 flex items-center justify-center text-white text-xs font-bold">
                   {getInitials(userData?.username)}
                 </div>
               )}
@@ -328,15 +335,15 @@ const ContractorUserNav = () => {
               
               <div className="pt-4 border-t border-gray-200">
                 <div className="flex items-center space-x-3 mb-4">
-                  {userData?.profilePic ? (
+                  {userData?.profilePic && !imgError ? (
                     <img
-                      src={userData.profilePic.includes('data:') ? userData.profilePic : 
-                           `http://localhost:5000${userData.profilePic}`}
-                      alt="Profile"
+                      src={getProfileImageUrl(userData.profilePic)}
+                      alt=""
                       className="w-10 h-10 rounded-full border-2 border-blue-500 object-cover"
+                      onError={() => setImgError(true)}
                     />
                   ) : (
-                    <div className="w-10 h-10 rounded-full bg-gradient-to-r from-blue-400 to-blue-600 flex items-center justify-center text-white text-lg">
+                    <div className="w-10 h-10 rounded-full bg-gradient-to-r from-blue-400 to-blue-600 flex items-center justify-center text-white text-lg font-bold">
                       {getInitials(userData?.username)}
                     </div>
                   )}
