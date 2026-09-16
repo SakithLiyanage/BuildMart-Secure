@@ -83,11 +83,9 @@ router.post('/', auth, async (req, res) => {
     res.status(201).json(savedReview);
     
   } catch (error) {
-    console.error('Error creating review:', error);
+    console.error('Error creating review:', error.message);
     res.status(500).json({
-      message: 'Error creating review',
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      message: 'Error creating review'
     });
   }
 });

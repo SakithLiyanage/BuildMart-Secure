@@ -2,62 +2,80 @@ const express = require('express');
 const router = express.Router();
 const SupplierPayment = require('../models/SupplierPayment');
 const RestockRequest = require('../models/RestockRequest');
+const auth = require('../middleware/auth');
+const { requireAdmin } = require('../middleware/auth');
 
+// V03: Protect all supplier payment routes with authentication and role check
 
-// Get all supplier payments
-router.get('/', async (req, res) => {
+// Get all supplier payments (Admin only)
+router.get('/', auth, requireAdmin, async (req, res) => {
   try {
     const payments = await SupplierPayment.find();
     res.json(payments);
   } catch (error) {
-    console.error('Error fetching supplier payments:', error);
+    console.error('Error fetching supplier payments:', error.message);
     res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Create a new supplier payment
-router.post('/', async (req, res) => {
+// Create a new supplier payment (Admin only)
+router.post('/', auth, requireAdmin, async (req, res) => {
   try {
-    const payment = new SupplierPayment(req.body);
+    const { supplierId, supplierName, amount, requestId, items } = req.body;
+    
+    if (!supplierName || !amount) {
+      return res.status(400).json({ message: 'Supplier name and amount are required' });
+    }
+
+    const payment = new SupplierPayment({
+      supplierId,
+      supplierName,
+      amount: parseFloat(amount),
+      requestId,
+      items,
+      status: 'pending',
+      createdBy: req.user.id
+    });
+
     const savedPayment = await payment.save();
-    // Update restock request payment status and details
-    if (req.body.requestId) {
-      const updatedRequest = await RestockRequest.findByIdAndUpdate(
-        req.body.requestId,
+
+    if (requestId) {
+      await RestockRequest.findByIdAndUpdate(
+        requestId,
         {
           paymentStatus: 'pending payment',
           paymentDetails: {
             method: 'Direct Payment',
-            amount: req.body.amount,
+            amount: parseFloat(amount),
             transactionId: savedPayment._id,
             paidDate: new Date()
           }
         },
         { new: true }
       );
-      console.log('Updated restock request:', updatedRequest);
     }
+
     res.status(201).json(savedPayment);
   } catch (error) {
-    console.error('Error creating supplier payment:', error);
-    res.status(400).json({ message: error.message });
+    console.error('Error creating supplier payment:', error.message);
+    res.status(400).json({ message: 'Invalid payment parameters' });
   }
 });
 
-// Get a specific payment
-router.get('/:id', async (req, res) => {
+// Get a specific payment (Admin only)
+router.get('/:id', auth, requireAdmin, async (req, res) => {
   try {
     const payment = await SupplierPayment.findById(req.params.id);
     if (!payment) return res.status(404).json({ message: 'Payment not found' });
     res.json(payment);
   } catch (error) {
-    console.error('Error fetching supplier payment:', error);
+    console.error('Error fetching supplier payment:', error.message);
     res.status(500).json({ message: 'Server error' });
   }
 });
 
-// Update payment status
-router.patch('/:id/status', async (req, res) => {
+// Update payment status (Admin only)
+router.patch('/:id/status', auth, requireAdmin, async (req, res) => {
   try {
     const { status } = req.body;
     
@@ -66,18 +84,14 @@ router.patch('/:id/status', async (req, res) => {
     }
     
     const payment = await SupplierPayment.findById(req.params.id);
-    
     if (!payment) {
       return res.status(404).json({ message: 'Payment not found' });
     }
     
     payment.status = status;
     
-    // If payment is marked as paid, update the payment date
     if (status === 'paid') {
       payment.paymentDate = new Date();
-      
-      // If there's an associated restock request, update it too
       if (payment.requestId) {
         await RestockRequest.findByIdAndUpdate(
           payment.requestId,
@@ -92,7 +106,7 @@ router.patch('/:id/status', async (req, res) => {
     const updatedPayment = await payment.save();
     res.json(updatedPayment);
   } catch (error) {
-    console.error('Error updating supplier payment status:', error);
+    console.error('Error updating supplier payment status:', error.message);
     res.status(500).json({ message: 'Server error' });
   }
 });
