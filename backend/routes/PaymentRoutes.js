@@ -1,88 +1,88 @@
-// paymentController.js
 const express = require('express');
 const router = express.Router();
-const Payment = require('../models/Payment');  // Import your payment model
-const jwt = require('jsonwebtoken');
+const Payment = require('../models/Payment');
+const OngoingWork = require('../models/Ongoingworkmodel');
+const Product = require('../models/Product');
+const auth = require('../middleware/auth');
+const { requireAdmin } = require('../middleware/auth');
 
-// Add this middleware to extract user data from token
-const extractUserFromToken = (req, res, next) => {
+// ==========================================
+// 1. PROCESS PAYMENT (V16 Server Price Validation & V19 Secret Check)
+// ==========================================
+router.post('/process-payment', auth, async (req, res) => {
   try {
-    const authHeader = req.headers.authorization;
-    
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.substring(7); // Remove 'Bearer ' prefix
-      const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
-      
-      // Add user data to request
-      req.userData = {
-        id: decoded.userId || decoded.id || decoded._id,
-        email: decoded.email,
-        name: decoded.name || decoded.fullName,
-        role: decoded.role,
-        userType: decoded.userType,
-        ...decoded // Include any other fields from token
-      };
-    }
-    next();
-  } catch (error) {
-    console.error('Error extracting user data from token:', error);
-    // Continue without user data
-    next();
-  }
-};
-
-// Use the middleware
-router.post('/process-payment', extractUserFromToken, async (req, res) => {
-  try {
-    // Extract payment details from request body
     const {
       name: cardholderName,
       cardNumber,
       expiry,
       amount,
       activeCard,
-      // Additional fields
       originalAmount,
       commissionAmount,
       commissionRate,
       context,
       order,
       workId,
-      milestoneId,
-      user: requestUser
+      milestoneId
     } = req.body;
 
-    // Validate context type against allowed payment types
-    const validPaymentTypes = ['other', 'milestone', 'inventory', 'agreement_fee', 'customer'];
-    const paymentType = validPaymentTypes.includes(context) ? context : 'other';
-    
-    // Log if there's a mismatch
-    if (context && context !== paymentType) {
-      console.warn(`Payment context '${context}' not recognized. Using '${paymentType}' instead.`);
-    }
-
-    // Get user data either from request body or from token
-    const userData = requestUser || req.userData || null;
-    
-    console.log('Processing payment with user data:', userData);
-
     // Basic validation
-    if (!cardholderName || !cardNumber || !expiry || !amount || !activeCard) {
+    if (!cardholderName || !cardNumber || !expiry || amount === undefined || !activeCard) {
       return res.status(400).json({
         success: false,
         message: 'Missing required payment fields'
       });
     }
 
-    // Validate card number - simple length check
-    if (cardNumber.length < 12 || cardNumber.length > 19) {
+    const parsedAmount = parseFloat(amount);
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Payment amount must be a positive number'
+      });
+    }
+
+    // V16: Server-side price recalculation/verification to prevent client-side price tampering
+    let verifiedAmount = parsedAmount;
+    if (order && Array.isArray(order.items) && order.items.length > 0) {
+      let computedTotal = 0;
+      for (const item of order.items) {
+        if (item.productId || item._id) {
+          const productDoc = await Product.findById(item.productId || item._id);
+          if (productDoc && productDoc.price) {
+            computedTotal += productDoc.price * (item.quantity || 1);
+          } else if (item.price) {
+            computedTotal += parseFloat(item.price) * (item.quantity || 1);
+          }
+        } else if (item.price) {
+          computedTotal += parseFloat(item.price) * (item.quantity || 1);
+        }
+      }
+      if (computedTotal > 0) {
+        // If client submitted tampered amount (e.g. $0.01 instead of computed catalog total)
+        if (Math.abs(parsedAmount - computedTotal) > 0.05) {
+          return res.status(400).json({
+            success: false,
+            message: 'Price tampering detected: amount does not match authoritative catalog calculation'
+          });
+        }
+        verifiedAmount = computedTotal;
+      }
+    }
+
+    // Validate context type
+    const validPaymentTypes = ['other', 'milestone', 'inventory', 'agreement_fee', 'customer'];
+    const paymentType = validPaymentTypes.includes(context) ? context : 'other';
+
+    // Validate card number length
+    const cleanCardNumber = cardNumber.toString().replace(/\s+/g, '');
+    if (cleanCardNumber.length < 12 || cleanCardNumber.length > 19) {
       return res.status(400).json({
         success: false,
         message: 'Invalid card number'
       });
     }
 
-    // Validate expiry - simple format check (MM/YY)
     if (!/^\d{2}\/\d{2}$/.test(expiry)) {
       return res.status(400).json({
         success: false,
@@ -90,30 +90,27 @@ router.post('/process-payment', extractUserFromToken, async (req, res) => {
       });
     }
 
-    // Extract last 4 digits of card
-    const lastFourDigits = cardNumber.slice(-4);
+    const lastFourDigits = cleanCardNumber.slice(-4);
 
-    // Create user object from available data
-    const userObject = userData ? {
-      userId: userData.id || userData.userId || null,
-      email: userData.email || null,
-      name: userData.name || cardholderName,
-      role: userData.role || null,
-      userType: userData.userType || null
-    } : null;
+    // Derived strictly from authenticated JWT session (V17 / Identity Spoofing prevention)
+    const userObject = {
+      userId: req.user.id,
+      email: req.user.email,
+      name: cardholderName,
+      role: req.user.role
+    };
 
-    // Create payment record
     const payment = new Payment({
       cardholderName,
-      cardType: activeCard.toLowerCase(),
+      cardType: typeof activeCard === 'string' ? activeCard.toLowerCase() : 'visa',
       lastFourDigits,
       expiryDate: expiry,
-      amount: parseFloat(amount),
-      originalAmount: originalAmount ? parseFloat(originalAmount) : parseFloat(amount),
+      amount: verifiedAmount,
+      originalAmount: originalAmount ? parseFloat(originalAmount) : verifiedAmount,
       commissionAmount: commissionAmount ? parseFloat(commissionAmount) : 0,
       commissionRate: commissionRate || 0,
       status: 'completed',
-      paymentType: paymentType,  // Use the validated payment type
+      paymentType,
       user: userObject,
       workId: workId || null,
       milestoneId: milestoneId || null,
@@ -125,9 +122,7 @@ router.post('/process-payment', extractUserFromToken, async (req, res) => {
     });
 
     await payment.save();
-    console.log('Payment saved successfully:', payment._id);
 
-    // Return response
     res.status(200).json({
       success: true,
       message: 'Payment processed successfully',
@@ -138,7 +133,7 @@ router.post('/process-payment', extractUserFromToken, async (req, res) => {
         commissionAmount: payment.commissionAmount,
         commissionRate: payment.commissionRate,
         status: payment.status,
-        context: context,
+        context,
         cardType: payment.cardType,
         lastFourDigits,
         cardholderName,
@@ -147,147 +142,159 @@ router.post('/process-payment', extractUserFromToken, async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Payment processing error:', error);
+    console.error('Payment processing error:', error.message);
     res.status(500).json({
       success: false,
-      message: 'Payment processing failed',
-      error: error.message
+      message: 'Payment processing failed'
     });
   }
 });
 
-// Fetch All Payments Route
-router.get('/', async (req, res) => {
+// ==========================================
+// 2. FETCH PAYMENTS (V02 Broken Access Control & V13 NoSQL Injection)
+// ==========================================
+router.get('/', auth, async (req, res) => {
   try {
-    const { 
-      status, 
-      cardType, 
-      dateFrom, 
-      dateTo,
-      sort = 'createdAt',
-      order = 'desc'
-    } = req.query;
-    
-    // Build filter object
+    const { status, cardType, dateFrom, dateTo, sort = 'createdAt', order = 'desc' } = req.query;
+
     const filter = {};
-    
-    if (status && status !== 'all') {
+
+    // IDOR / Access Control: Regular users can only see their own transactions, Admin sees all
+    if (req.user.role !== 'Admin') {
+      filter['user.userId'] = req.user.id;
+    }
+
+    // V13: Whitelist filter parameters to prevent NoSQL query operator injection
+    const ALLOWED_STATUSES = ['pending', 'completed', 'failed'];
+    if (status && ALLOWED_STATUSES.includes(status)) {
       filter.status = status;
     }
-    
-    if (cardType && cardType !== 'all') {
-      filter.cardType = cardType;
+
+    const ALLOWED_CARD_TYPES = ['visa', 'mastercard', 'amex', 'discover'];
+    if (cardType && typeof cardType === 'string' && ALLOWED_CARD_TYPES.includes(cardType.toLowerCase())) {
+      filter.cardType = cardType.toLowerCase();
     }
-    
+
     if (dateFrom || dateTo) {
       filter.createdAt = {};
-      
-      if (dateFrom) {
+      if (dateFrom && !isNaN(Date.parse(dateFrom))) {
         filter.createdAt.$gte = new Date(dateFrom);
       }
-      
-      if (dateTo) {
+      if (dateTo && !isNaN(Date.parse(dateTo))) {
         filter.createdAt.$lte = new Date(dateTo);
       }
     }
-    
-    // Build sort object
-    const sortObj = {};
-    sortObj[sort] = order === 'asc' ? 1 : -1;
-    
-    const payments = await Payment.find(filter)
-      .sort(sortObj)
-      .exec();
-    
+
+    const ALLOWED_SORTS = ['createdAt', 'amount', 'status'];
+    const sortField = ALLOWED_SORTS.includes(sort) ? sort : 'createdAt';
+    const sortObj = { [sortField]: order === 'asc' ? 1 : -1 };
+
+    const payments = await Payment.find(filter).sort(sortObj).exec();
     res.status(200).json(payments);
   } catch (error) {
-    console.error('Error fetching payments:', error);
+    console.error('Error fetching payments:', error.message);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch payments',
-      error: error.message
+      message: 'Failed to fetch payments'
     });
   }
 });
 
-// Add route to update payment status
-router.patch('/:id/status', async (req, res) => {
+// ==========================================
+// 3. UPDATE PAYMENT STATUS (V02 Admin Access Control)
+// ==========================================
+router.patch('/:id/status', auth, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
-    
-    if (!['pending', 'completed', 'failed'].includes(status)) {
+
+    const ALLOWED_STATUSES = ['pending', 'completed', 'failed'];
+    if (!status || !ALLOWED_STATUSES.includes(status)) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid payment status'
+        message: 'Invalid payment status value'
       });
     }
-    
+
     const payment = await Payment.findByIdAndUpdate(
       id,
       { status },
       { new: true, runValidators: true }
     );
-    
+
     if (!payment) {
       return res.status(404).json({
         success: false,
         message: 'Payment not found'
       });
     }
-    
+
     res.status(200).json({
       success: true,
       message: 'Payment status updated successfully',
       payment
     });
   } catch (error) {
-    console.error('Error updating payment status:', error);
+    console.error('Error updating payment status:', error.message);
     res.status(500).json({
       success: false,
-      message: 'Failed to update payment status',
-      error: error.message
+      message: 'Failed to update payment status'
     });
   }
 });
 
-// Add this new route to handle milestone payments
-router.post('/milestone-payment', async (req, res) => {
+// ==========================================
+// 4. MILESTONE PAYMENTS (Auth required)
+// ==========================================
+router.post('/milestone-payment', auth, async (req, res) => {
   try {
-    const {
-      workId,
-      milestoneId,
-      amount,
-      paymentDetails
-    } = req.body;
+    const { workId, milestoneId, amount, paymentDetails } = req.body;
 
-    // Create payment record
+    if (!workId || !milestoneId || !amount || !paymentDetails) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required milestone payment details'
+      });
+    }
+
+    const parsedAmount = parseFloat(amount);
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid milestone amount'
+      });
+    }
+
     const payment = new Payment({
       ...paymentDetails,
-      amount: parseFloat(amount),
+      amount: parsedAmount,
       status: 'completed',
-      type: 'milestone',
+      paymentType: 'milestone',
       workId,
-      milestoneId
+      milestoneId,
+      user: {
+        userId: req.user.id,
+        email: req.user.email,
+        name: paymentDetails.cardholderName || req.user.username,
+        role: req.user.role
+      }
     });
 
     await payment.save();
 
-    // Update the milestone status
-    await OngoingWork.findOneAndUpdate(
-      { 
-        _id: workId,
-        'milestones._id': milestoneId 
-      },
-      {
-        $set: {
-          'milestones.$.status': 'completed',
-          'milestones.$.actualAmountPaid': amount,
-          'milestones.$.completedAt': new Date(),
-          'milestones.$.paymentId': payment._id
+    if (OngoingWork) {
+      await OngoingWork.findOneAndUpdate(
+        { _id: workId, 'milestones._id': milestoneId },
+        {
+          $set: {
+            'milestones.$.status': 'completed',
+            'milestones.$.actualAmountPaid': parsedAmount,
+            'milestones.$.completedAt': new Date(),
+            'milestones.$.paymentId': payment._id
+          }
         }
-      }
-    );
+      );
+    }
 
     res.status(200).json({
       success: true,
@@ -298,21 +305,13 @@ router.post('/milestone-payment', async (req, res) => {
         status: payment.status
       }
     });
-
   } catch (error) {
-    console.error('Milestone payment error:', error);
+    console.error('Milestone payment error:', error.message);
     res.status(500).json({
       success: false,
-      message: 'Payment processing failed',
-      error: error.message
+      message: 'Payment processing failed'
     });
   }
 });
-
-// Test your backend connectivity
-fetch('http://localhost:5000/api/payments/process-payment', {
-  method: 'HEAD'
-})
-.catch(err => console.error('Server connection error:', err));
 
 module.exports = router;
