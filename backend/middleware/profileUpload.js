@@ -22,13 +22,16 @@ const storage = multer.diskStorage({
   }
 });
 
-// File filter
+// File filter: V14 remediation (block SVG / stored XSS, allow only raster images)
+const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp'];
+
 const fileFilter = (req, file, cb) => {
-  // Accept only images
-  if (file.mimetype.startsWith('image/')) {
+  const ext = path.extname(file.originalname).toLowerCase();
+  if (ALLOWED_MIME_TYPES.includes(file.mimetype) && ALLOWED_EXTENSIONS.includes(ext)) {
     cb(null, true);
   } else {
-    cb(new Error('Only image files are allowed for profile pictures!'), false);
+    cb(new Error('Invalid file type: Only JPG, PNG, and WebP raster images are allowed (SVGs are prohibited for security)'), false);
   }
 };
 
