@@ -42,7 +42,7 @@ const allowedOrigins = [
   'http://127.0.0.1:5173'
 ];
 app.use(cors({
-  origin: function(origin, callback) {
+  origin: function (origin, callback) {
     if (!origin || allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
@@ -76,7 +76,7 @@ app.use('/api/jobs', jobRoutes);
 app.use('/api/contractors', require('./routes/contractorprofile'));
 app.use('/api/email', require('./routes/email'));
 app.use('/api/orders', orderRoutes); // Add this line
-app.use('/api/reviews', reviewsRoutes); 
+app.use('/api/reviews', reviewsRoutes);
 app.use('/api/supplierPayments', supplierPaymentRoutes); // Original camelCase route
 app.use('/api/supplier-payments', supplierPaymentRoutes); // New dash-case route to fix the 404 error
 
@@ -107,6 +107,18 @@ mongoose.connect(process.env.MONGO_URI)
 // Routes
 app.get('/', (req, res) => {
   res.send('Hello from the server');
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  if (err && err.message === 'Blocked by CORS policy') {
+    return res.status(403).json({ error: 'Blocked by CORS policy' });
+  }
+  if (err && (err.name === 'MulterError' || /file type|file upload/i.test(err.message || ''))) {
+    return res.status(400).json({ error: err.message || 'File upload error' });
+  }
+  console.error('Unhandled error:', err && err.stack ? err.stack : err);
+  res.status(500).json({ error: 'Internal server error' });
 });
 
 // Start server

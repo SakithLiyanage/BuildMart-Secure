@@ -44,7 +44,22 @@ const generateAuthToken = (user) => {
 // ==========================================
 // 1. SIGNUP & REGISTRATION (V07 Mass Assignment & V18 Rate Limit)
 // ==========================================
-router.post('/signup', authLimiter, profileUpload.single('profilePic'), async (req, res) => {
+// V14 remediation note: profileUpload.single(...) is wrapped in a callback here rather
+// than passed as plain middleware. Multer's fileFilter rejects a file by calling
+// cb(new Error(...), false), which Express treats as next(err) - with no wrapper (and no
+// global error-handling middleware in server.js), that error previously fell through to
+// Express's default handler and returned a raw 500 with a stack trace instead of a clean
+// 400. This mirrors the pattern already used correctly further down in this file's
+// /google route.
+router.post('/signup', authLimiter, (req, res, next) => {
+  profileUpload.single('profilePic')(req, res, (err) => {
+    if (err) {
+      console.error('Signup profile upload error:', err.message);
+      return res.status(400).json({ error: err.message || 'File upload error' });
+    }
+    next();
+  });
+}, async (req, res) => {
   try {
     const { username, email, password, role } = req.body;
 
@@ -633,7 +648,16 @@ router.delete('/users/:userId', auth, async (req, res) => {
 });
 
 // Profile image upload endpoint (Protected with auth)
-router.post('/upload/profile', auth, profileUpload.single('profilePic'), async (req, res) => {
+// V14 remediation note: same fileFilter-error wrapping as /signup above.
+router.post('/upload/profile', auth, (req, res, next) => {
+  profileUpload.single('profilePic')(req, res, (err) => {
+    if (err) {
+      console.error('Profile upload error:', err.message);
+      return res.status(400).json({ error: err.message || 'File upload error' });
+    }
+    next();
+  });
+}, async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No profile image uploaded or invalid file format' });

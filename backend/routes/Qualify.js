@@ -58,7 +58,21 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-router.post('/', qualificationUpload.single('documentImage'), async (req, res) => {
+// V14 remediation note: qualificationUpload.single(...) is wrapped in a callback here
+// rather than passed as plain middleware. Multer's fileFilter rejects a file by calling
+// cb(new Error(...), false), which Express treats as next(err) - with no wrapper (and no
+// global error-handling middleware in server.js), that error falls through to Express's
+// default handler and returns a raw 500 with a stack trace instead of a clean 400. This
+// mirrors the pattern already used correctly in routes/auth.js's /google route.
+router.post('/', (req, res, next) => {
+  qualificationUpload.single('documentImage')(req, res, (err) => {
+    if (err) {
+      console.error('Qualification upload error:', err.message);
+      return res.status(400).json({ error: err.message || 'File upload error' });
+    }
+    next();
+  });
+}, async (req, res) => {
   try {
     const { userId, type, name, issuer, year, expiry } = req.body;
     
@@ -93,8 +107,8 @@ router.post('/', qualificationUpload.single('documentImage'), async (req, res) =
     const yearNum = parseInt(year);
     const currentYear = new Date().getFullYear();
     if (yearNum > currentYear || yearNum < 1900) {
-      return res.status(400).json({ 
-        error: `Year must be between 1900 and ${currentYear}` 
+      return res.status(400).json({
+        error: `Year must be between 1900 and ${currentYear}`
       });
     }
     
@@ -123,7 +137,15 @@ router.post('/', qualificationUpload.single('documentImage'), async (req, res) =
 });
 
 // PUT (update) qualification with file upload
-router.put('/:id', qualificationUpload.single('documentImage'), async (req, res) => {
+router.put('/:id', (req, res, next) => {
+  qualificationUpload.single('documentImage')(req, res, (err) => {
+    if (err) {
+      console.error('Qualification upload error:', err.message);
+      return res.status(400).json({ error: err.message || 'File upload error' });
+    }
+    next();
+  });
+}, async (req, res) => {
   try {
     const { id } = req.params;
     const updateData = req.body;
@@ -168,8 +190,8 @@ router.put('/:id', qualificationUpload.single('documentImage'), async (req, res)
       const yearNum = parseInt(updateData.year);
       const currentYear = new Date().getFullYear();
       if (yearNum > currentYear || yearNum < 1900) {
-        return res.status(400).json({ 
-          error: `Year must be between 1900 and ${currentYear}` 
+        return res.status(400).json({
+          error: `Year must be between 1900 and ${currentYear}`
         });
       }
     }
@@ -177,11 +199,11 @@ router.put('/:id', qualificationUpload.single('documentImage'), async (req, res)
     // If file was uploaded, save the file path and delete old file
     if (req.file) {
       updateData.documentImage = `/uploads/qualifications/${req.file.filename}`;
-      
-      if (existingQualification.documentImage && 
-          !existingQualification.documentImage.startsWith('data:') &&
-          !existingQualification.documentImage.startsWith('http')) {
-        
+
+      if (existingQualification.documentImage &&
+        !existingQualification.documentImage.startsWith('data:') &&
+        !existingQualification.documentImage.startsWith('http')) {
+
         try {
           // Remove the leading slash and construct full file path
           const oldPath = existingQualification.documentImage.replace(/^\//, '');
@@ -234,10 +256,10 @@ router.delete('/:id', async (req, res) => {
     }
     
     // Delete the associated image file if it exists
-    if (qualification.documentImage && 
-        !qualification.documentImage.startsWith('data:') &&
-        !qualification.documentImage.startsWith('http')) {
-      
+    if (qualification.documentImage &&
+      !qualification.documentImage.startsWith('data:') &&
+      !qualification.documentImage.startsWith('http')) {
+
       try {
         // Remove the leading slash and construct full file path
         const imagePath = qualification.documentImage.replace(/^\//, '');
