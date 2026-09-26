@@ -20,20 +20,56 @@ const Invoice = ({ isOpen, onClose, cartItems, total, paymentDetails }) => {
   const today = new Date();
   const date = today.toLocaleDateString('en-GB');
   const time = today.toLocaleTimeString('en-GB');
-  
+
   // Calculate subtotal, tax, etc.
   const subtotal = cartItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
   const shipping = 350;
   const tax = subtotal * 0.15;
-  
+
   //print and download functions
+  // V-DOMXSS remediation: the original implementation read invoiceRef.current.innerHTML
+  // (a string) and reassigned it to document.body.innerHTML, then reloaded the page.
+  // Reassigning arbitrary HTML strings into document.body is the classic CWE-79 DOM-XSS
+  // sink pattern, and it also destroyed the entire React app on every print. This version
+  // never touches document.body and never serializes DOM to an HTML string at all: it
+  // clones the already-rendered invoice node with cloneNode() (a structural DOM clone,
+  // not string parsing) into an isolated hidden iframe, prints just that iframe, then
+  // removes it, so the running app is untouched and there is no HTML-injection surface.
   const handlePrint = () => {
-    const printContent = invoiceRef.current.innerHTML;
-    const originalContent = document.body.innerHTML;
-    document.body.innerHTML = printContent;
-    window.print();
-    document.body.innerHTML = originalContent;
-    window.location.reload();
+    const invoiceNode = invoiceRef.current;
+    if (!invoiceNode) return;
+
+    const iframe = document.createElement('iframe');
+    iframe.style.position = 'fixed';
+    iframe.style.width = '0';
+    iframe.style.height = '0';
+    iframe.style.border = '0';
+    iframe.style.visibility = 'hidden';
+    document.body.appendChild(iframe);
+
+    const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+    iframeDoc.open();
+    iframeDoc.write('<!DOCTYPE html><html><head><title>Invoice</title></head><body></body></html>');
+    iframeDoc.close();
+
+    // Carry over the page's stylesheets so the printed invoice keeps its styling.
+    document.querySelectorAll('link[rel="stylesheet"], style').forEach((node) => {
+      iframeDoc.head.appendChild(node.cloneNode(true));
+    });
+
+    // Structural clone of the already-rendered (React-escaped) invoice DOM node.
+    iframeDoc.body.appendChild(invoiceNode.cloneNode(true));
+
+    const cleanup = () => {
+      if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+    };
+
+    // Give the cloned stylesheets a moment to apply before printing.
+    setTimeout(() => {
+      iframe.contentWindow.focus();
+      iframe.contentWindow.print();
+      setTimeout(cleanup, 500);
+    }, 250);
   };
 
   const handleDownload = () => {
@@ -44,15 +80,15 @@ const Invoice = ({ isOpen, onClose, cartItems, total, paymentDetails }) => {
 
   if (!isOpen) return null;
 
-//modal content
+  //modal content
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
     >
-      <motion.div 
+      <motion.div
         initial={{ scale: 0.95, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
         exit={{ scale: 0.95, opacity: 0 }}
@@ -62,21 +98,21 @@ const Invoice = ({ isOpen, onClose, cartItems, total, paymentDetails }) => {
         <div className="sticky top-0 z-10 flex justify-between items-center p-6 border-b bg-white">
           <h2 className="text-2xl font-bold text-gray-800">Invoice</h2>
           <div className="flex gap-2">
-            <button 
+            <button
               onClick={handlePrint}
               className="p-2 text-gray-600 hover:bg-gray-100 rounded-full transition-colors"
               title="Print Invoice"
             >
               <FiPrinter size={20} />
             </button>
-            <button 
+            <button
               onClick={handleDownload}
               className="p-2 text-gray-600 hover:bg-gray-100 rounded-full transition-colors"
               title="Download Invoice"
             >
               <FiDownload size={20} />
             </button>
-            <button 
+            <button
               onClick={onClose}
               className="p-2 text-gray-600 hover:bg-gray-100 rounded-full transition-colors"
               title="Close"
@@ -85,7 +121,7 @@ const Invoice = ({ isOpen, onClose, cartItems, total, paymentDetails }) => {
             </button>
           </div>
         </div>
-        
+
         {/* Success Message */}
         <div className="bg-green-50 p-4 border-b border-green-100 flex items-center gap-3">
           <FiCheckCircle className="text-green-500" size={24} />
@@ -94,7 +130,7 @@ const Invoice = ({ isOpen, onClose, cartItems, total, paymentDetails }) => {
             <p className="text-green-700 text-sm">Thank you for your purchase!</p>
           </div>
         </div>
-        
+
         {/* Invoice Content */}
         <div className="p-6" ref={invoiceRef}>
           <div className="mb-8 flex justify-between items-start">
@@ -111,7 +147,7 @@ const Invoice = ({ isOpen, onClose, cartItems, total, paymentDetails }) => {
               <p className="text-gray-500 text-sm">{time}</p>
             </div>
           </div>
-          
+
           <div className="border-t border-b border-gray-200 py-4 mb-6">
             <h3 className="font-semibold text-lg mb-2">Payment Information</h3>
             <div className="grid grid-cols-2 gap-4">
@@ -125,7 +161,7 @@ const Invoice = ({ isOpen, onClose, cartItems, total, paymentDetails }) => {
               </div>
             </div>
           </div>
-          
+
           <h3 className="font-semibold text-lg mb-3">Order Summary</h3>
           <div className="overflow-auto mb-6">
             <table className="min-w-full divide-y divide-gray-200">
@@ -153,7 +189,7 @@ const Invoice = ({ isOpen, onClose, cartItems, total, paymentDetails }) => {
               </tbody>
             </table>
           </div>
-          
+
           <div className="border-t border-gray-200 pt-4 mb-8">
             <div className="flex justify-between text-sm mb-2">
               <span className="text-gray-600">Subtotal</span>
@@ -172,13 +208,13 @@ const Invoice = ({ isOpen, onClose, cartItems, total, paymentDetails }) => {
               <span className="text-indigo-700">{formatCurrency(total)}</span>
             </div>
           </div>
-          
+
           <div className="text-center text-gray-500 text-sm mt-12">
             <p>Thank you for shopping with BuildMart!</p>
             <p>For any inquiries, please contact customer service at support@buildmart.com</p>
           </div>
         </div>
-        
+
         <div className="sticky bottom-0 bg-gradient-to-t from-white via-white p-6 pt-3">
           <button
             onClick={onClose}
