@@ -22,15 +22,20 @@ const storage = multer.diskStorage({
   }
 });
 
-// File filter for images with improved validation
+// File filter: V14-class remediation extended to qualification documents.
+// `file.mimetype` is client-supplied and trivially spoofable (an attacker can set
+// Content-Type: image/jpeg on any file), so it must never be trusted alone.
+// Requiring the file extension to also match a safe allow-list closes that gap and
+// blocks SVG/HTML/script uploads disguised with a fake MIME type.
+const ALLOWED_MIME_TYPES = ['image/jpeg', 'image/png', 'image/jpg', 'application/pdf'];
+const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.pdf'];
+
 const fileFilter = (req, file, cb) => {
-  // Check MIME type
-  const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/jpg', 'application/pdf'];
-  
-  if (allowedMimeTypes.includes(file.mimetype)) {
+  const ext = path.extname(file.originalname).toLowerCase();
+  if (ALLOWED_MIME_TYPES.includes(file.mimetype) && ALLOWED_EXTENSIONS.includes(ext)) {
     cb(null, true);
   } else {
-    cb(new Error('Only JPG, PNG images and PDF files are allowed'), false);
+    cb(new Error('Invalid file type: Only JPG, PNG images and PDF files are allowed (SVG/HTML/script files are prohibited for security)'), false);
   }
 };
 

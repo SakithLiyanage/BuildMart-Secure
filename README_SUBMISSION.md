@@ -15,7 +15,7 @@
 | **Sakith Liyanage** | sakithchanlaka2004@gmail.com | Authentication, Privilege Escalation & Google SSO | **V07** (Mass Assignment Escalation) & **V12** (NoSQL Login Injection) + **Google OAuth 2.0 / OIDC** |
 | **Lahiru Jayawardhana** | lahirutharaka02@gmail.com | Broken Access Control & IDOR Defense | **V08** (Order Lookup IDOR) & **V10** (Contractor Profile IDOR) |
 | **Luqman Booso** | luqmanbooso@gmail.com | Financial Integrity & Business Logic Security | **V16** (Client Price Tampering) & **V01** (Unauthenticated Admin Salary Routes) |
-| **Nilakshi Madubashini** | nilakshimadubashini920@gmail.com | File Upload Stored XSS & HTTP Security Headers | **V14** (SVG Stored XSS via File Upload) & **V22** (Missing Security Headers / CSP / CORS) |
+| **Nilakshi Madubashini** | nilakshimadubashini920@gmail.com | File Upload Stored XSS & HTTP Security Headers | **V14** (SVG Stored XSS via File Upload — extended to qualification document uploads and DOM-based `innerHTML` XSS sinks in invoice printing / avatar fallback) & **V22** (Missing Security Headers / CSP / CORS) |
 
 *(All 4 members demonstrated 2 core vulnerabilities each in the 20-minute video, with 25 total vulnerabilities patched in the repository)*
 
@@ -47,7 +47,7 @@
 11. **V11 (CWE-639)**: IDOR in Contractor Bid Mutation (`backend/routes/bids.js`)
 12. **V12 (CWE-943)**: NoSQL Injection via Query Selector in Login (`backend/routes/auth.js`)
 13. **V13 (CWE-943)**: NoSQL Query Filter Injection in Payment Search (`backend/routes/PaymentRoutes.js`)
-14. **V14 (CWE-434/79)**: Insecure File Upload & Stored XSS via SVG (`backend/middleware/profileUpload.js`, `upload.js`)
+14. **V14 (CWE-434/79)**: Insecure File Upload & Stored XSS via SVG (`backend/middleware/profileUpload.js`, `upload.js`, `qualificationUpload.js`; DOM-based `innerHTML` XSS sinks also fixed in `frontend/src/components/Invoice.jsx` and `frontend/src/Pages/ContractorsPage.jsx`)
 15. **V15 (CWE-116)**: Insecure Static File Serving Without Security Headers (`backend/server.js`)
 16. **V16 (CWE-472)**: Client-Side Price Tampering in Checkout (`backend/routes/PaymentRoutes.js`)
 17. **V17 (CWE-290)**: Contractor Identity Spoofing in Bid Creation (`backend/routes/bids.js`)

@@ -79,9 +79,17 @@ const ContractorDetailsModal = ({ contractor, onClose }) => {
                     alt={username}
                     className="w-full h-full object-cover"
                     onError={(e) => {
-                      e.target.src = null;
-                      e.target.parentElement.classList.add('bg-gradient-to-r', 'from-blue-400', 'to-blue-600');
-                      e.target.parentElement.innerHTML = `<div class="w-full h-full flex items-center justify-center text-white text-3xl">${username.charAt(0).toUpperCase()}</div>`;
+                      // V-DOMXSS remediation: build the fallback element via safe DOM
+                      // APIs (createElement/textContent) instead of interpolating the
+                      // username into an innerHTML string, removing the injection sink
+                      // even though only a single character was used previously.
+                      const parent = e.target.parentElement;
+                      e.target.remove();
+                      parent.classList.add('bg-gradient-to-r', 'from-blue-400', 'to-blue-600');
+                      const fallback = document.createElement('div');
+                      fallback.className = 'w-full h-full flex items-center justify-center text-white text-3xl';
+                      fallback.textContent = username.charAt(0).toUpperCase();
+                      parent.appendChild(fallback);
                     }}
                   />
                 ) : (
@@ -354,9 +362,15 @@ const ContractorCard = ({ contractor }) => {
                   alt={username}
                   className="w-full h-full object-cover"
                   onError={(e) => {
-                    e.target.src = null;
-                    e.target.parentElement.classList.add('bg-gradient-to-r', 'from-blue-400', 'to-blue-600');
-                    e.target.parentElement.innerHTML = `<div class="w-full h-full flex items-center justify-center text-white text-2xl">${username.charAt(0).toUpperCase()}</div>`;
+                    // V-DOMXSS remediation: safe DOM construction instead of an
+                    // innerHTML template-literal injection sink (see hero avatar above).
+                    const parent = e.target.parentElement;
+                    e.target.remove();
+                    parent.classList.add('bg-gradient-to-r', 'from-blue-400', 'to-blue-600');
+                    const fallback = document.createElement('div');
+                    fallback.className = 'w-full h-full flex items-center justify-center text-white text-2xl';
+                    fallback.textContent = username.charAt(0).toUpperCase();
+                    parent.appendChild(fallback);
                   }}
                 />
               ) : (
